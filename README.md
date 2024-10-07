@@ -19,8 +19,6 @@
 
 ## Installation
 
-- **UnRaid:** Search for `Cloudflare DNS Auto Sync` in the App tab and install it from there
-
 - **Docker:** Run the app using Docker: [`ostlerdev/cloudflare-dns-auto-sync:latest`](https://hub.docker.com/r/ostlerdev/cloudflare-dns-auto-sync)
 
 ### Environment Variables
