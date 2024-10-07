@@ -27,7 +27,7 @@ To use this app, you'll need to set the following environment variables:
 
 - `CLOUDFLARE_API_TOKEN`: Your Cloudflare API token.
 - `MONITORED_DOMAINS`: A comma-separated list of domains or subdomains you want to monitor (e.g., `example.com,sub.example.com,*.domain.com`).
-- CHECK_INTERVAL: The interval (in seconds) between checks for IP address changes. Default is `21600` (6 hours).
+- `CHECK_INTERVAL`: The interval (in seconds) between checks for IP address changes. Default is `21600` (6 hours).
 
 ## Contributing
 
