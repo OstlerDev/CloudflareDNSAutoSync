@@ -8,6 +8,8 @@ console.log(chalk.magentaBright(`
 =================================
 `));
 
+let previousPublicIP = "";
+
 const DEBUG = process.env.DEBUG || false
 
 const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
@@ -23,19 +25,7 @@ if (!MONITORED_DOMAINS) {
   process.exit(1);
 }
 
-const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL, 10) || 21600; // Default to 6 hours if not set
-
-function parseDomainParts(domain){
-  const parseResult = parseDomain(domain);
-  if (parseResult.type !== ParseResultType.Listed) {
-    // Check if there was an issue with the wildcard at the start of the domain
-    if(parseResult.errors[0]?.message == 'Label "*" contains invalid character "*" at column 1.') {
-      // We are a wildcard, so let's relax the validation.
-      return parseDomain(domain, { validation: Validation.Lax })
-    }
-  }
-  return parseResult;
-}
+const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL, 10) || 3600; // Default to 1 hour if not set
 
 function formatInterval(interval) {
   const hours = Math.floor(interval / 3600);
@@ -47,6 +37,20 @@ function formatInterval(interval) {
   if (minutes > 0) result += `${minutes}m `;
   if (seconds > 0 || result === '') result += `${seconds}s`;
   return result.trim();
+}
+
+const formattedInterval = formatInterval(CHECK_INTERVAL);
+
+function parseDomainParts(domain){
+  const parseResult = parseDomain(domain);
+  if (parseResult.type !== ParseResultType.Listed) {
+    // Check if there was an issue with the wildcard at the start of the domain
+    if(parseResult.errors[0]?.message == 'Label "*" contains invalid character "*" at column 1.') {
+      // We are a wildcard, so let's relax the validation.
+      return parseDomain(domain, { validation: Validation.Lax })
+    }
+  }
+  return parseResult;
 }
 
 const monitoredDomains = MONITORED_DOMAINS.split(',')
@@ -219,12 +223,21 @@ async function updateCloudflareRecord(zoneId, record, domain, newIP) {
 async function checkAndUpdateIP() {
   console.log(chalk.magenta(`
 
-🤖 Heyo! Let's make sure your domains are up-to-date! ^u^ 💖`));
+
+
+🤖 Heyo! Let's make sure your domains are up-to-date! ^u^ 💖
+`));
 
   console.log('🚀 Starting IP check and update process...')
   try {
     const publicIP = await getPublicIP();
-    console.log('🚀 Starting IP check and update process...');
+    if (previousPublicIP == publicIP) {
+      console.log(chalk.magenta(`🎉 Public IP has not changed! No update required! 🌈`))
+      console.log(chalk.magenta(`💤 Taking a nap for ${formattedInterval}... See you in a bit! 😴💤`))
+      setTimeout(checkAndUpdateIP, CHECK_INTERVAL * 1000)
+      return
+    }
+    previousPublicIP = publicIP
 
     for (const domain of monitoredDomains) {
       try {
@@ -267,7 +280,6 @@ async function checkAndUpdateIP() {
     if (DEBUG) { console.error(error) }
   }
 
-  const formattedInterval = formatInterval(CHECK_INTERVAL);
   console.log(chalk.magenta(`💤 Taking a nap for ${formattedInterval}... See you in a bit! 😴💤`));
   setTimeout(checkAndUpdateIP, CHECK_INTERVAL * 1000);
 }
