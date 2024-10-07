@@ -3,9 +3,9 @@ import axios from 'axios';
 import chalk from 'chalk';
 
 console.log(chalk.magentaBright(`
-============================
+=================================
 ✨ 🌐 Cloudflare DNS Auto Sync 🌐 ✨
-============================
+=================================
 `));
 
 const DEBUG = process.env.DEBUG || false
