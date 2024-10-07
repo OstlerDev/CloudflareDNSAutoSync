@@ -8,7 +8,9 @@ console.log(chalk.magentaBright(`
 ✨🌐 Cloudflare DNS Auto Sync 🌐✨
 ============================
 `));
-console.log(chalk.magenta('🤖 Heyo! Let\'s make sure your domains are always up-to-date! ^u^ 💖'));
+console.log(chalk.magenta(`🤖 Heyo! Let's make sure your domains are always up-to-date! ^u^ 💖`));
+
+const DEBUG = process.env.DEBUG || false
 
 const CLOUDFLARE_API_TOKEN = process.env.CLOUDFLARE_API_TOKEN;
 if (!CLOUDFLARE_API_TOKEN) {
@@ -23,16 +25,30 @@ if (!MONITORED_DOMAINS) {
   process.exit(1);
 }
 
+const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL, 10) || 21600; // Default to 6 hours if not set
+
 function parseDomainParts(domain){
   const parseResult = parseDomain(domain);
   if (parseResult.type !== ParseResultType.Listed) {
     // Check if there was an issue with the wildcard at the start of the domain
-    if(parseResult.errors[0].message == 'Label "*" contains invalid character "*" at column 1.') {
-      // We are a wildcard, so lets relax the validation.
+    if(parseResult.errors[0]?.message == 'Label "*" contains invalid character "*" at column 1.') {
+      // We are a wildcard, so let's relax the validation.
       return parseDomain(domain, { validation: Validation.Lax })
     }
   }
-  return parseResult
+  return parseResult;
+}
+
+function formatInterval(interval) {
+  const hours = Math.floor(interval / 3600);
+  const minutes = Math.floor((interval % 3600) / 60);
+  const seconds = interval % 60;
+  
+  let result = '';
+  if (hours > 0) result += `${hours}h `;
+  if (minutes > 0) result += `${minutes}m `;
+  if (seconds > 0 || result === '') result += `${seconds}s`;
+  return result.trim();
 }
 
 const monitoredDomains = MONITORED_DOMAINS.split(',')
@@ -74,6 +90,7 @@ async function getPublicIP() {
       }
     } catch (error) {
       spinner.warn(`⚠️  Failed to fetch IP address from ${service}, trying next service... 🚧`);
+      if (DEBUG) { console.error(error) }
     }
   }
 
@@ -123,28 +140,33 @@ async function getCloudflareRecord(domain) {
     // Optimize the logic to find matching DNS records for wildcards and special cases
     let record = recordResponse.data.result.find(r => r.name === domain && r.type == "A");
 
+    if (record) {
+      spinner.succeed(`🎉 Found A record for ${chalk.yellow(domain)}, record ID: ${chalk.cyan(record.id)} 🎈`);
+      return { zoneId, record }; // Return the specific matched record
+    }
+
     // If no exact match, attempt to find a wildcard record
-    if (!record) {
-      record = recordResponse.data.result.find(r => r.name.startsWith('*.') && domain.endsWith(r.name.replace('*.', '')));
+    if (!record && domain.includes("*")) {
+      record = recordResponse.data.result.find(r => r.name.startsWith('*.') && domain.endsWith(r.name.replace('*.', '')) && r.type == "A");
       if (record) {
         spinner.info(`🔮 Wildcard DNS Entry match found for ${chalk.yellow(domain)}, record ID: ${chalk.cyan(record.id)} ✨`);
+      } else {
+        // If still no match, assume user wants to update all records for this domain
+        const aRecords = recordResponse.data.result.filter(r => r.type == "A");
+        spinner.info(`💡 Wildcard does not exist as its own DNS entry for ${chalk.cyan(domain)}, treating this as a request to update all A records for the root domain. 📜`);
+        return { zoneId, records: aRecords }; // Return all A records for bulk update
       }
     }
 
-    // If still no match, assume user wants to update all records for this domain
-    if (!record) {
-      spinner.info(`💡 Wildcard does not exist as its own DNS entry for ${chalk.cyan(domain)}, treating this as a request to update all DNS records for the root domain. 📜`);
-      return { zoneId, records: recordResponse.data.result.filter(r => r.type == "A") }; // Return all A records for bulk update
-    }
-
-    spinner.succeed(`🎉 Found DNS record for ${chalk.yellow(domain)}, record ID: ${chalk.cyan(record.id)} 🎈`);
-    return { zoneId, record }; // Return the specific matched record
+    spinner.fail(`❌ DNS record not found for domain: ${chalk.yellow(domain)} 😞`);
+    throw new Error(`❌ DNS record not found for domain: ${chalk.yellow(domain)} 😞`)
   } catch (error) {
     if (error.response && error.response.status === 403) {
       spinner.fail(chalk.red('❌ Authentication error: Please check your Cloudflare API token. 🔑'));
     } else {
-      spinner.fail(`❌ Error fetching Cloudflare record for domain ${chalk.yellow(domain)}: ${error.message} 😵`);
+      spinner.fail(`❌ Error fetching Cloudflare record for domain ${chalk.yellow(domain)} 😵`);
     }
+    if (DEBUG) { console.error(error) }
     throw error;
   }
 }
@@ -158,14 +180,15 @@ async function getCloudflareIP(zoneId, record) {
         'Content-Type': 'application/json'
       }
     });
-    spinner.succeed(`🌟 Current Cloudflare DNS IP for ${chalk.yellow(record.name)}: ${chalk.cyan(response.data.result.content)} 🎉`);
+    spinner.succeed(`🌟 DNS IP for ${chalk.yellow(record.name)} is currently: ${chalk.cyan(response.data.result.content)} 🎉`);
     return response.data.result.content;
   } catch (error) {
     if (error.response && error.response.status === 403) {
       spinner.fail(chalk.red(`❌ Authentication error for ${chalk.yellow(record.name)}: Please check your Cloudflare API token. 🔑`));
     } else {
-      spinner.fail(`❌ Error fetching Cloudflare DNS IP for ${chalk.yellow(record.name)}: ${error.message} 😵`);
+      spinner.fail(`❌ Error fetching Cloudflare DNS IP for ${chalk.yellow(record.name)} 😵`);
     }
+    if (DEBUG) { console.error(error) }
     throw error;
   }
 }
@@ -188,8 +211,9 @@ async function updateCloudflareRecord(zoneId, record, domain, newIP) {
     if (error.response && error.response.status === 403) {
       spinner.fail(chalk.red('❌ Authentication error: Please check your Cloudflare API token. 🔑'));
     } else {
-      spinner.fail(`❌ Error updating Cloudflare record for ${chalk.yellow(record.name)}: ${error.message} 😵`);
+      spinner.fail(`❌ Error updating Cloudflare record for ${chalk.yellow(record.name)} 😵`);
     }
+    if (DEBUG) { console.error(error) }
     throw error;
   }
 }
@@ -201,38 +225,49 @@ async function checkAndUpdateIP() {
     spinner.succeed('🚀 Starting IP check and update process...');
 
     for (const domain of monitoredDomains) {
-      console.log(chalk.blue(`
+      try {
+        console.log(chalk.blue(`
+  🔄 Processing domain: ${chalk.bold(chalk.yellow(domain))} ✨`));
+        const { zoneId, record, records } = await getCloudflareRecord(domain);
 
-🔄 Processing domain: ${chalk.cyan(chalk.bold(domain))} ✨`));
-      const { zoneId, record, records } = await getCloudflareRecord(domain);
-
-      if (record) {
-        const cloudflareIP = await getCloudflareIP(zoneId, record);
-        if (publicIP !== cloudflareIP) {
-          console.log(chalk.yellow(`🌈 IP for ${chalk.yellow(record.name)} needs to be updated! Updating Cloudflare from ${cloudflareIP} to ${publicIP}... ✨`));
-          await updateCloudflareRecord(zoneId, record, domain, publicIP);
-          console.log(chalk.green(`✔️ Cloudflare record updated successfully for ${chalk.yellow(record.name)}! 💚`));
-        } else {
-          console.log(chalk.cyan(`ℹ️  IP for ${chalk.yellow(record.name)} is the same as ours! No update needed. 😊`));
-        }
-      } else if (records) {
-        console.log(chalk.magenta(`🌟 (Wildcard) Updating multiple DNS records for ${chalk.cyan(domain)} to new IP: ${publicIP} ✨`));
-        for (const r of records) {
-          const cloudflareIP = await getCloudflareIP(zoneId, r);
+        if (record) {
+          const cloudflareIP = await getCloudflareIP(zoneId, record);
           if (publicIP !== cloudflareIP) {
-            console.log(chalk.yellow(`🌈 IP for ${chalk.yellow(r.name)} needs to be updated! Updating Cloudflare from ${cloudflareIP} to ${publicIP}... ✨`));
-            await updateCloudflareRecord(zoneId, r, domain, publicIP);
-            console.log(chalk.green(`✔️ Cloudflare record updated successfully for ${chalk.yellow(r.name)}! 💚`));
+            console.log(chalk.bold(chalk.yellow(`🌈 DNS IP for ${chalk.yellow(record.name)} needs to be updated! Updating Cloudflare from ${cloudflareIP} to ${publicIP}... ✨`)));
+            await updateCloudflareRecord(zoneId, record, domain, publicIP);
+            console.log(chalk.green(`✔️  Cloudflare record for ${chalk.yellow(record.name)} updated successfully! 💚`));
           } else {
-            console.log(chalk.cyan(`ℹ️  IP for ${chalk.yellow(r.name)} is the same as ours! No update needed. 😊`));
+            console.log(chalk.cyan(`ℹ️  DNS IP for ${chalk.yellow(record.name)} is the same as ours! No update needed. 😊`));
           }
+        } else if (records) {
+          console.log(chalk.magenta(`🌟 (Wildcard) Checking if any DNS records for ${chalk.cyan(domain)} need to be updated to new IP: ${publicIP} ✨`));
+          for (const r of records) {
+            const cloudflareIP = await getCloudflareIP(zoneId, r);
+            if (publicIP !== cloudflareIP) {
+              console.log(chalk.bold(chalk.yellow(`🌈 DNS IP for ${chalk.yellow(r.name)} needs to be updated! Updating Cloudflare from ${cloudflareIP} to ${publicIP}... ✨`)));
+              await updateCloudflareRecord(zoneId, r, domain, publicIP);
+              console.log(chalk.green(`✔️  Cloudflare record for ${chalk.yellow(r.name)} updated successfully! 💚`));
+            } else {
+              console.log(chalk.cyan(`ℹ️  DNS IP for ${chalk.yellow(r.name)} is the same as ours! No update needed. 😊`));
+            }
+          }
+          console.log(chalk.green(`✔️  (Wildcard) All DNS records for ${chalk.yellow(domain)} verified/updated! 💚`));
         }
-        console.log(chalk.green(`✔️ (Wildcard) All DNS records for ${chalk.yellow(domain)} verified/updated! 💚`));
+      } catch (e) {
+        spinner.fail(`❌ Error updating Cloudflare DNS for ${chalk.bold(chalk.yellow(domain))} 😵`);
+        if (DEBUG) { console.error(error) }
       }
     }
+    console.log(chalk.magentaBright(`
+✨ All done! Great job! We'll keep things up-to-date for you. 💖✨`));
   } catch (error) {
     spinner.fail('❌ Error updating Cloudflare DNS 😵: ' + error);
+    if (DEBUG) { console.error(error) }
   }
+
+  const formattedInterval = formatInterval(CHECK_INTERVAL);
+  console.log(chalk.magenta(`💤 Taking a nap for ${formattedInterval}... See you in a bit! 😴💤`));
+  setTimeout(checkAndUpdateIP, CHECK_INTERVAL * 1000);
 }
 
 // Run the check
