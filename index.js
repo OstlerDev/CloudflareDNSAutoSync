@@ -79,8 +79,6 @@ async function getPublicIP() {
     'https://ipinfo.io/json'
   ];
 
-  console.log('🔍 Fetching your public IP address...')
-
   for (const service of publicIPServices) {
     try {
       console.log(`🔍 Fetching public IP address from: ${service}`);
@@ -101,7 +99,6 @@ async function getPublicIP() {
 }
 
 async function getCloudflareRecord(domain) {
-  console.log(`🔍 Fetching Cloudflare record for domain: ${chalk.yellow(domain)}...`)
   const parseResult = parseDomainParts(domain);
   if (parseResult.type !== ParseResultType.Listed) {
     console.log(chalk.red(`❌ Failed to parse domain: ${chalk.yellow(domain)} 😞`));
@@ -110,7 +107,6 @@ async function getCloudflareRecord(domain) {
   const rootDomain = `${parseResult.domain}.${parseResult.topLevelDomains.join('.')}`;
 
   try {
-    console.log(`🔍 Fetching zone ID for root domain: ${rootDomain}`)
     const zoneResponse = await axios.get(`https://api.cloudflare.com/client/v4/zones?name=${rootDomain}`, {
       headers: {
         Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
@@ -124,9 +120,6 @@ async function getCloudflareRecord(domain) {
     }
 
     const zoneId = zoneResponse.data.result[0].id;
-    console.log(`🌟 Zone ID for ${rootDomain} is ${chalk.cyan(zoneId)} ✨`);
-
-    console.log(`🔍 Fetching DNS record for domain: ${chalk.yellow(domain)}`);
     const recordResponse = await axios.get(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records?match=all`, {
       headers: {
         Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
@@ -135,15 +128,15 @@ async function getCloudflareRecord(domain) {
     });
 
     if (recordResponse.data.result.length === 0) {
-      console.log(chalk.red(`❌ DNS record not found for domain: ${chalk.yellow(domain)} 😞`));
-      throw new Error(`DNS record not found for domain: ${chalk.yellow(domain)}`);
+      console.log(chalk.red(`❌ No existing DNS records found for root domain: ${chalk.yellow(rootDomain)} 😞`));
+      throw new Error(`No existing DNS records found for root domain: ${chalk.yellow(rootDomain)}`);
     }
 
     // Optimize the logic to find matching DNS records for wildcards and special cases
     let record = recordResponse.data.result.find(r => r.name === domain && r.type == "A");
 
     if (record) {
-      console.log(`🎉 Found A record for ${chalk.yellow(domain)}, record ID: ${chalk.cyan(record.id)} 🎈`);
+      console.log(`🎉 Found A record for ${chalk.yellow(record.name)}: ${chalk.cyan(record.content)} 🎈`);
       return { zoneId, record }; // Return the specific matched record
     }
 
@@ -151,11 +144,12 @@ async function getCloudflareRecord(domain) {
     if (!record && domain.includes("*")) {
       record = recordResponse.data.result.find(r => r.name.startsWith('*.') && domain.endsWith(r.name.replace('*.', '')) && r.type == "A");
       if (record) {
-        console.log(`🔮 Wildcard DNS Entry match found for ${chalk.yellow(domain)}, record ID: ${chalk.cyan(record.id)} ✨`);
+        console.log(`🔮 Wildcard DNS Entry match found for ${chalk.yellow(domain)}: ${chalk.cyan(record.content)} ✨`);
       } else {
         // If still no match, assume user wants to update all records for this domain
         const aRecords = recordResponse.data.result.filter(r => r.type == "A");
-        console.log(`💡 Wildcard does not exist as its own DNS entry for ${chalk.cyan(domain)}, treating this as a request to update all A records for the root domain. 📜`);
+        console.log(chalk.magenta(`💡 ${chalk.yellow(domain)} Wildcard does not exist as its own DNS entry  📜`)) 
+        console.log(chalk.magenta(`💡 Treating this as a request to update all A records for the root domain ${chalk.yellow(rootDomain)} 📜`));
         return { zoneId, records: aRecords }; // Return all A records for bulk update
       }
     }
@@ -173,30 +167,7 @@ async function getCloudflareRecord(domain) {
   }
 }
 
-async function getCloudflareIP(zoneId, record) {
-  console.log(`🔍 Fetching current Cloudflare DNS IP for: ${chalk.yellow(record.name)}`);
-  try {
-    const response = await axios.get(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${record.id}`, {
-      headers: {
-        Authorization: `Bearer ${CLOUDFLARE_API_TOKEN}`,
-        'Content-Type': 'application/json'
-      }
-    });
-    console.log(`🌟 DNS IP for ${chalk.yellow(record.name)} is currently: ${chalk.cyan(response.data.result.content)} 🎉`);
-    return response.data.result.content;
-  } catch (error) {
-    if (error.response && error.response.status === 403) {
-      console.log(chalk.red(`❌ Authentication error for ${chalk.yellow(record.name)}: Please check your Cloudflare API token. 🔑`));
-    } else {
-      console.log(chalk.red(`❌ Error fetching Cloudflare DNS IP for ${chalk.yellow(record.name)} 😵`));
-    }
-    if (DEBUG) { console.error(error) }
-    throw error;
-  }
-}
-
 async function updateCloudflareRecord(zoneId, record, domain, newIP) {
-  console.log(`🔄 Updating Cloudflare record for: ${chalk.yellow(record.name)}...`)
   try {
     // Preserve all settings except for the IP address
     await axios.put(`https://api.cloudflare.com/client/v4/zones/${zoneId}/dns_records/${record.id}`, {
@@ -208,7 +179,6 @@ async function updateCloudflareRecord(zoneId, record, domain, newIP) {
         'Content-Type': 'application/json'
       }
     });
-    console.log(`🎉 Successfully updated Cloudflare record for: ${chalk.yellow(record.name)} 💖`);
   } catch (error) {
     if (error.response && error.response.status === 403) {
       console.log(chalk.red('❌ Authentication error: Please check your Cloudflare API token. 🔑'));
@@ -228,7 +198,6 @@ async function checkAndUpdateIP() {
 🤖 Heyo! Let's make sure your domains are up-to-date! ^u^ 💖
 `));
 
-  console.log('🚀 Starting IP check and update process...')
   try {
     const publicIP = await getPublicIP();
     if (previousPublicIP == publicIP) {
@@ -246,7 +215,7 @@ async function checkAndUpdateIP() {
         const { zoneId, record, records } = await getCloudflareRecord(domain);
 
         if (record) {
-          const cloudflareIP = await getCloudflareIP(zoneId, record);
+          const cloudflareIP = record.content;
           if (publicIP !== cloudflareIP) {
             console.log(chalk.bold(chalk.yellow(`🌈 DNS IP for ${chalk.yellow(record.name)} needs to be updated! Updating Cloudflare from ${cloudflareIP} to ${publicIP}... ✨`)));
             await updateCloudflareRecord(zoneId, record, domain, publicIP);
@@ -257,7 +226,7 @@ async function checkAndUpdateIP() {
         } else if (records) {
           console.log(chalk.magenta(`🌟 (Wildcard) Checking if any DNS records for ${chalk.cyan(domain)} need to be updated to new IP: ${publicIP} ✨`));
           for (const r of records) {
-            const cloudflareIP = await getCloudflareIP(zoneId, r);
+            const cloudflareIP = r.content;
             if (publicIP !== cloudflareIP) {
               console.log(chalk.bold(chalk.yellow(`🌈 DNS IP for ${chalk.yellow(r.name)} needs to be updated! Updating Cloudflare from ${cloudflareIP} to ${publicIP}... ✨`)));
               await updateCloudflareRecord(zoneId, r, domain, publicIP);
